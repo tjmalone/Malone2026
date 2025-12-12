@@ -1,0 +1,68 @@
+function spatialInfo_dual(trackLength, binWidth)
+
+
+load('abfFake.mat');
+name='dfofaverage*.mat';
+file=dir(name);
+
+for n=1:length(file)
+    load(file(n).name);
+end
+
+% calculate spatial information using dfof and sfof_sig
+sfx = {'_dfof','_sig'};
+
+for ii = 1:length(sfx)
+    % load field information
+    load(['gridAnalysis' sfx{ii} '\allCellsCorrected.mat'],'allCellsCorrected')
+
+
+    %% Calculate spatial information
+
+    % make spatial information folder
+    mkdir(['spatialInfo' sfx{ii}]);
+    cd(['spatialInfo' sfx{ii}]);
+
+    % set use dfof
+    if strcmp(sfx{ii},'_dfof')
+        useDfof = dfofaveragesmooth;
+    elseif strcmp(sfx{ii},'_sig')
+        useDfof = dfofaveragesmooth_sig;
+    end
+    nCells = size(useDfof,2);
+
+    % calculate spatial information using old method
+    [SI] = spatialInformation(abfFake,useDfof,binWidth,trackLength);
+    save('SI.mat','SI');
+
+    % calculate spatial information using new method
+    [SI] = spatialInformationNew(abfFake,useDfof,binWidth,trackLength);
+    save('SInew.mat','SI');
+
+
+    %% Calculate spatial selectivity
+
+    % calcualte in-field and non-field activity
+    inFields = zeros(nCells,1);
+    nonFields = zeros(nCells,1);
+    for jj = 1:nCells
+        % get in field bins
+        curInField = false(1,size(useDfof,1));
+        curFieldBins = allCellsCorrected.inFieldBins{jj};
+        if ~isempty(curFieldBins) && ~any(isnan(curFieldBins))
+            curInField(curFieldBins) = true;
+        end
+
+        % calculate in-field and non-field averages
+        inFields(jj) = mean(useDfof(curInField,jj),'omitnan');
+        nonFields(jj) = mean(useDfof(~curInField,jj),'omitnan');
+    end
+
+    % calculate spatial selectivity
+    SS = (inFields-nonFields)./(inFields+nonFields);
+    save('spatialSelectivity.mat','SS','inFields','nonFields');
+
+    cd ../
+end
+
+end

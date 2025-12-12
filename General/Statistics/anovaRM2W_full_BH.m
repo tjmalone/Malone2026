@@ -1,0 +1,143 @@
+function [pAnova,pMC,pLabel,stats] = anovaRM2W_full_BH(data1,data2,mcON,lmeCI)
+% Performs repeated measure 2-Way ANOVA assuming sphericity. Calculates
+% multiple comparisons using a non-paired ttest with Bonferonni correction.
+% Anova p-vaule matches Prism output for predictor variable (X/Learning
+% Type). Can likely be replaced by mes2way.
+%
+% Inputs: (must have same number of time points)
+%       data1 - first data matrix (subject x time)
+%       data2 - second data matrix (subject x time)
+%       mcON - whether to perform correction for multiple comparions
+%
+% Outputs:
+%       pANOVA - p value for ANOVA for X, T, X-T, X-T alternate. Matlab has
+%           two ways to produce an interaction p-value. The first of these
+%           matches the output of Prism.
+%       pMC - p values for multiple t-tests. Corrrected for multiple
+%           comparions only if mcON=1.
+%       pLabel - labels for the Anova p values.
+%
+
+% concatenate data
+data = cat(1,data1,data2);
+nSub1 = size(data1,1);
+nSub2 = size(data2,1);
+nTime = size(data,2);
+stats = struct();
+
+% test for nan values
+nanTest = any(isnan(data),'all');
+
+if nanTest==0   % run ANOVA if no NaNs are present
+    % generate predictor categories (X)
+    X = cat(1,repmat({'A'},nSub1,1),repmat({'B'},nSub2,1));
+
+    % generate data table
+    Q = [table(X) array2table(data)];
+
+    % generate repeated measures table
+    W = table((1:nTime)','VariableNames',{'Time'});
+
+    % create repeated measures model
+    rm = fitrm(Q,['data1-data' num2str(nTime) '~X'],'WithinDesign',W);
+
+    % run ANOVA
+    pAll = anova(rm,'WithinModel','Time');
+    pAnova = pAll{[2 4 5],'pValue'};
+    pAll2 = ranova(rm);
+    pAnova(4) = pAll2{2,'pValue'};
+    pLabel = {'X','T','X:T','altX:T'};
+
+    % stats
+    stats.F = [pAll.F([2 4 5]); pAll2.F(2)];
+    stats.df = [pAll.DF([2 4 5]); pAll2.DF(2)];
+    stats.test = 'two-way repeated measures ANOVA';
+
+elseif nanTest==1   % run LMEM if NaNs are present
+    %%
+    
+    disp('Running Linear Mixed-Effects Model')
+
+    % generate subject labels
+    subjects = repmat((1:(nSub1+nSub2))',1,nTime);
+
+    % generate predictor categories (X)
+    X = [repmat({'A'}, nSub1, nTime); repmat({'B'}, nSub2, nTime)];
+
+    % generate time labels
+    time = repmat(1:nTime, nSub1 + nSub2, 1);
+
+    % flatten data to column
+    Y = data(:);
+    subjects = subjects(:);
+    X = X(:);
+    time = time(:);
+
+    % remove rows with NaN
+    validIdx = ~isnan(Y);
+    % validIdx = true(size(X));
+    T = table(Y(validIdx), X(validIdx), categorical(time(validIdx)), subjects(validIdx), ...
+        'VariableNames', {'Y', 'X', 'Time', 'Subject'});
+
+    % convert categorical variables
+    T.X = categorical(T.X);
+    T.Subject = categorical(T.Subject);
+
+    % if any(all(isnan(T),1))
+    % fit linear mixed effects model
+    try
+        lme = fitlme(T, 'Y ~ X*Time + (1|Subject)', ...
+            'FitMethod','REML','DummyVarCoding','effects');
+
+        % run ANOVA
+        pAll = anova(lme,'DFMethod','Satterthwaite');
+        pAnova = pAll.pValue(2:4);
+        pLabel = {'X','T','X:T'};
+
+        % set stats
+        stats.F = pAll.FStat(2:4);
+        stats.df = [pAll.DF1(2:4),pAll.DF2(2:4)];
+        stats.test = 'linear mixed-effects model';
+
+        if nargin>3 && lmeCI==1
+            [stats.eta2,stats.CI] = lmeEffectSize(T,pAll.FStat(2),pAll.DF1(2),pAll.DF2(2));
+        end
+    catch ME
+        % handle rank error
+        if (strcmp(ME.identifier,...
+                'stats:classreg:regr:lmeutils:StandardLinearLikeMixedModel:MustBeFullRank_X'))
+            pAnova = NaN;
+            pLabel = {'Rank Error'};
+
+            % set stats
+            stats.F = NaN;
+            stats.df = NaN;
+            stats.test = 'linear mixed-effects model';
+            if nargin>3 && lmeCI==1
+                stats.eta2 = NaN;
+                stats.CI = nan(1,2);
+            end
+        else
+            rethrow(ME);
+        end
+    end
+
+end
+
+% run ttest with multiple corrections
+[~,MC] = ttest2(data1,data2);
+if nargin<3 || isempty(mcON) || mcON~=0
+    % remove nan values
+    nanMC = isnan(MC);
+    useMC = MC(~nanMC)';
+
+    % perform correction
+    [~,usePMC] = bonferroni_holm(useMC);
+
+    % add nan values back in
+    pMC = nan(size(MC'));
+    pMC(~nanMC) = usePMC;
+else
+    pMC = MC';
+end
+
